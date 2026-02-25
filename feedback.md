@@ -274,8 +274,8 @@ def add_days(date_str: str, days: int) -> str:
 #### Result
 
 The improved prompt produced a better debugging outcome because:
-• It forced runtime inspection first (Guideline 3 actually applied).
-• It placed constraints and explicit edge cases at the end (Guideline 6 used correctly).
-• It reduced “random fixes” and made the next step clear: run tests, read logs, then apply the smallest safe patch.
+- It forced runtime inspection first (Guideline 3 actually applied).
+- It placed constraints and explicit edge cases at the end (Guideline 6 used correctly).
+- It reduced “random fixes” and made the next step clear: run tests, read logs, then apply the smallest safe patch.
 
 ---
