@@ -13,7 +13,7 @@ Write a code review for the UserSessionManager class in user_session_manager.py
 **Starter Code:**
 
 The function and example test file is found
-in https://github.com/GDeane/CS846_week8_counterexample/tree/master/week8/A_1.
+in https://github.com/GDeane/CS846_week8_counterexample/tree/master/Week8/A_1.
 
 > A note on GenAI contribution: The code examples and test files were generated using GitHub Copilot: [Claude Opus 4.6]
 
@@ -340,7 +340,7 @@ to give feedback like this.
 **Starter Code:**
 
 The function and example test file is found
-in https://github.com/GDeane/CS846_week8_counterexample/tree/master/week8/B_1.
+in https://github.com/GDeane/CS846_week8_counterexample/tree/master/Week8/B_1.
 
 > A note on GenAI contribution: The code examples and test files were generated using GitHub
 > Copilot: [MODEL USED IF USED]
@@ -396,7 +396,7 @@ days) for some inputs.
 **Starter Code:**
 
 The function and example test file is found
-in https://github.com/GDeane/CS846_week8_counterexample/tree/master/week8/C_1.
+in https://github.com/GDeane/CS846_week8_counterexample/tree/master/Week8/C_1.
 
 A note on GenAI contribution:\
 The counterexample prompts and structured documentation were generated
