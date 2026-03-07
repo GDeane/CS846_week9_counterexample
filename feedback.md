@@ -434,55 +434,659 @@ Ultimately, unit tests are not the best method for testing thread safety, it is 
 ### Problem B_1:  [Artemiy Vishnyakov]
 
 **Task Description:**
+You are given a checkout system for an online store that integrates multiple services: inventory management, payment processing, promotion handling, and customer notifications. The system supports item-level and order-level discounts, complex coupon stacking rules, loyalty point redemption, and shipping/tax calculations. Promotions may interact with inventory and mutate cart items. Notifications are sent to customers after checkout. Your task is to design unit tests and integration tests to identify bugs and unintended interactions between these interconnected components.
+
+BUGS:
+Here is your `bugs.csv` formatted as a Markdown table:
+
+
+| Bug # | Description | Actual Behavior | Expected Behavior |
+|-|-|-|-|
+| 1 | Empty cart is not validated | Proceeds to checkout with 0 subtotal returns 'success' | Raises CheckoutError('Cart is empty') |
+| 2 | Stock check logic is inverted | Raises CheckoutError when item is in stock; allows checkout when out of stock | Raises CheckoutError only when item is not in stock |
+| 3 | Bundle discount threshold off-by-one | Bundle 5% discount only triggers when quantity > 3 (i.e. quantity 4+) | Should trigger when quantity >= 3 (i.e. quantity 3+) |
+| 4 | SUMMER20 cap logic inverted | Uses max(20%, $30), flooring the discount at $30 instead of capping it there | Should use min(20%, $30) to cap at $30 |
+| 5 | FLASH5 + VIP combination not blocked | VIP customers can use FLASH5 coupon and receive both discounts | Should raise CheckoutError when FLASH5 is requested with a VIP customer |
+| 6 | Tax calculated on pre-discount subtotal | Tax is subtotal * 0.13 instead of (discounted_subtotal - loyalty_credit) * 0.13 | Tax base must be the fully-discounted, loyalty-adjusted amount |
+| 7 | Shipping threshold uses pre-discount subtotal | Free shipping granted when original subtotal >= $50, even if discounts bring it below | Should check discounted_subtotal >= $50 |
+| 8 | Payment failure not handled | charge() return value is ignored; checkout returns 'success' even on payment failure | Raises CheckoutError('Payment failed: <reason>') when charge() returns {'success': False, ...} |
+| 9 | Total not floored at zero | With a large enough discount + loyalty credit, total can be negative | total = max(0.0, total) |
+| 10 | PromotionService mutates cart items in place | BOGO promotion increases item quantity directly, causing reference bugs | Should return new cart or item objects, not mutate originals |
+| 11 | InventoryService double decrements stock | Stock is decremented twice for even quantities | Should decrement stock only once per checkout |
+| 12 | Notification sent before payment confirmation | Notification is sent even if payment fails | Should send notification only after payment is successful |
+| 13 | Loyalty points deducted even if payment fails | Customer points are reduced before payment is confirmed | Should deduct points only after payment is successful |
+| 14 | Stacking coupons not properly checked | Multiple coupons can be stacked, leading to excessive discounts | Should restrict coupon stacking according to business rules |
+| 15 | Inventory cache invalidation buggy | Stock checks use stale cache, allowing out-of-stock items | Should invalidate cache properly on stock changes |
+| 16 | BOGO and bundle discount interaction | BOGO and bundle discounts stack, causing unintended price reductions | Should restrict stacking or apply only one discount per item |
+| 17 | Race condition in loyalty points or inventory | Concurrent checkouts can cause inconsistent loyalty points or inventory | Should handle concurrency and atomic updates |
+| 18 | Notification content not validated | Notification message may be incorrect or misleading | Should verify notification content matches order status |
+| 19 | Cart mutation affects subsequent checkouts | Cart mutation persists across checkouts, causing incorrect orders | Should use fresh cart or clone items for each checkout |
+
 
 **Starter Code:**
 
 The example file is found
 in https://github.com/GDeane/CS846_week9_counterexample/tree/master/Week9/B_1.
 
-> A note on GenAI contribution: The code examples and test files were generated using GitHub Copilot: [MODEL USED]
+> A note on GenAI contribution: The code examples and test files were taken from the original problem A and expanded upon using GitHub Copilot: GPT-4.1
 
 ---
 
 ### 2. Guidelines that didn't work for Problem B_1
 
-#### Guideline X:
+#### Guideline 1: Specify the Testing Goal and Scope in the Prompt
 
 **Prompt and Context:**
 
-Context Given:
+Context Given: files in /B_1 given immediately
 
+> Generate pytest unit tests for `CheckoutService.process_checkout` in `checkout_service.py`.
 >
+> Framework: pytest + `unittest.mock.MagicMock` for `InventoryService` and `PaymentGateway`.
+> Use `@pytest.mark.parametrize` for boundary values. Use `pytest.raises(CheckoutError)` for all error paths. 
+> Do NOT test the external dependencies themselves.
+> 
+> Cover each rule with at least one test:
+> - Empty cart -> CheckoutError
+> - Stock check: error when out of stock, success when in stock
+> - Flash-sale discount (5%), bundle discount (quantity >= 3, 5%)
+> - SAVE10 (10%, min $100), SUMMER20 (20% capped at $30, min $75), FLASH5 (5% on flash items)
+> - VIP discount (15%) incompatible with all coupons; FLASH5 incompatible with VIP
+> - Loyalty credit applied only when points >= 500
+> - Shipping: $10 if discounted subtotal < $50, else $0
+> - Tax: 13% on post-discount, post-loyalty-credit amount
+> - Payment failure -> CheckoutError
+> - Total must never be negative
+> Parametrize: quantity in {2,3,4}; subtotal at $74.99/$75/$99.99/$100;
+> shipping boundary at $49.99/$50/$50.01.
+> State any assumptions as inline comments. Return only the test file.
 
 
-**Solution or Output generated by GitHub Copilot (GPT-5-mini):**
+**Solution or Output generated by GitHub Copilot (GPT-4.1):**
+import pytest
+from unittest.mock import MagicMock
+from checkout_service import (
+    CheckoutService,
+    Cart,
+    CartItem,
+    Customer,
+    CustomerTier,
+    CheckoutError,
+)
+
+@pytest.fixture
+def inventory():
+    inv = MagicMock()
+    inv.check_stock.return_value = True
+    inv.decrement_stock.return_value = None
+    return inv
+
+@pytest.fixture
+def payment():
+    pay = MagicMock()
+    pay.charge.return_value = {"success": True}
+    return pay
+
+@pytest.fixture
+def checkout(inventory, payment):
+    return CheckoutService(inventory, payment)
+
+@pytest.fixture
+def regular_customer():
+    return Customer("cust1", "Alice", tier=CustomerTier.REGULAR, loyalty_points=0)
+
+@pytest.fixture
+def vip_customer():
+    return Customer("vip1", "Bob", tier=CustomerTier.VIP, loyalty_points=0)
+
+@pytest.fixture
+def cart():
+    c = Cart()
+    return c
+
+# --- Empty cart ---
+def test_empty_cart_raises_error(checkout, regular_customer, cart):
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, regular_customer)
+
+# --- Stock check ---
+def test_out_of_stock_raises_error(checkout, regular_customer, cart, inventory):
+    cart.add_item(CartItem("p1", "Widget", 10.0, 1))
+    inventory.check_stock.return_value = False
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, regular_customer)
+
+def test_in_stock_checkout_success(checkout, regular_customer, cart):
+    cart.add_item(CartItem("p1", "Widget", 10.0, 1))
+    result = checkout.process_checkout(cart, regular_customer)
+    assert result["status"] == "success"
+
+# --- Flash-sale and bundle discounts ---
+@pytest.mark.parametrize("quantity", [2, 3, 4])
+def test_flash_sale_discount_applied(checkout, regular_customer, cart, quantity):
+    cart.add_item(CartItem("p1", "FlashWidget", 100.0, quantity, flash_sale=True))
+    result = checkout.process_checkout(cart, regular_customer)
+    # Flash sale: 5% off, bundle: 5% off if quantity >= 3
+    unit_price = 100.0 * 0.95
+    if quantity >= 3:
+        unit_price *= 0.95
+    expected_subtotal = unit_price * quantity
+    assert pytest.approx(result["subtotal"], rel=1e-2) == expected_subtotal
+
+@pytest.mark.parametrize("quantity", [2, 3, 4])
+def test_bundle_discount_applied(checkout, regular_customer, cart, quantity):
+    cart.add_item(CartItem("p1", "BundleWidget", 50.0, quantity))
+    result = checkout.process_checkout(cart, regular_customer)
+    unit_price = 50.0
+    if quantity >= 3:
+        unit_price *= 0.95
+    expected_subtotal = unit_price * quantity
+    assert pytest.approx(result["subtotal"], rel=1e-2) == expected_subtotal
+
+# --- Coupon rules ---
+@pytest.mark.parametrize("subtotal", [99.99, 100.0])
+def test_save10_coupon_min_spend(checkout, regular_customer, cart, subtotal):
+    cart.add_item(CartItem("p1", "Widget", subtotal, 1))
+    if subtotal < 100.0:
+        with pytest.raises(CheckoutError):
+            checkout.process_checkout(cart, regular_customer, coupon_code="SAVE10")
+    else:
+        result = checkout.process_checkout(cart, regular_customer, coupon_code="SAVE10")
+        assert result["coupon_applied"] == "SAVE10"
+        assert pytest.approx(result["discount"], rel=1e-2) == subtotal * 0.10
+
+@pytest.mark.parametrize("subtotal", [74.99, 75.0])
+def test_summer20_coupon_min_spend_and_cap(checkout, regular_customer, cart, subtotal):
+    cart.add_item(CartItem("p1", "Widget", subtotal, 1))
+    if subtotal < 75.0:
+        with pytest.raises(CheckoutError):
+            checkout.process_checkout(cart, regular_customer, coupon_code="SUMMER20")
+    else:
+        result = checkout.process_checkout(cart, regular_customer, coupon_code="SUMMER20")
+        # SUMMER20: 20% off, capped at $30
+        expected_discount = min(subtotal * 0.20, 30.0)
+        assert result["coupon_applied"] == "SUMMER20"
+        assert pytest.approx(result["discount"], rel=1e-2) == expected_discount
+
+def test_flash5_coupon_applies_only_to_flash_items(checkout, regular_customer, cart):
+    cart.add_item(CartItem("p1", "FlashWidget", 100.0, 1, flash_sale=True))
+    cart.add_item(CartItem("p2", "NormalWidget", 100.0, 1))
+    result = checkout.process_checkout(cart, regular_customer, coupon_code="FLASH5")
+    flash_sale_subtotal = 100.0 * 0.95  # 5% off flash sale
+    expected_discount = flash_sale_subtotal * 0.05
+    assert "FLASH5" in result["coupon_applied"]
+    assert pytest.approx(result["discount"], rel=1e-2) == expected_discount
+
+# --- VIP discount and incompatibility ---
+def test_vip_discount_applied(checkout, vip_customer, cart):
+    cart.add_item(CartItem("p1", "Widget", 100.0, 1))
+    result = checkout.process_checkout(cart, vip_customer)
+    assert pytest.approx(result["discount"], rel=1e-2) == 100.0 * 0.15
+
+def test_vip_and_save10_incompatible(checkout, vip_customer, cart):
+    cart.add_item(CartItem("p1", "Widget", 100.0, 1))
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, vip_customer, coupon_code="SAVE10")
+
+def test_vip_and_summer20_incompatible(checkout, vip_customer, cart):
+    cart.add_item(CartItem("p1", "Widget", 100.0, 1))
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, vip_customer, coupon_code="SUMMER20")
+
+def test_vip_and_flash5_allowed(checkout, vip_customer, cart):
+    cart.add_item(CartItem("p1", "FlashWidget", 100.0, 1, flash_sale=True))
+    result = checkout.process_checkout(cart, vip_customer, coupon_code="FLASH5")
+    # VIP discount applies to subtotal, FLASH5 applies to flash sale subtotal
+    vip_discount = 100.0 * 0.95 * 0.15
+    flash_discount = 100.0 * 0.95 * 0.05
+    # Bug: stacking not blocked, so both discounts applied
+    assert "FLASH5" in result["coupon_applied"]
+    assert pytest.approx(result["discount"], rel=1e-2) == (100.0 * 0.95 * 0.15 + 100.0 * 0.95 * 0.05)
+
+# --- Loyalty points ---
+@pytest.mark.parametrize("points", [499, 500, 600])
+def test_loyalty_points_applied(checkout, regular_customer, cart, points):
+    regular_customer.loyalty_points = points
+    cart.add_item(CartItem("p1", "Widget", 100.0, 1))
+    result = checkout.process_checkout(cart, regular_customer, redeem_points=True)
+    if points < 500:
+        assert result["points_redeemed"] == 0
+    else:
+        assert result["points_redeemed"] == min(points, 100)
+        assert result["total"] == pytest.approx(result["subtotal"] - result["discount"] - min(points, 100) + result["tax"] + result["shipping"], rel=1e-2)
+
+# --- Shipping ---
+@pytest.mark.parametrize("subtotal", [49.99, 50.0, 50.01])
+def test_shipping_boundary(checkout, regular_customer, cart, subtotal):
+    cart.add_item(CartItem("p1", "Widget", subtotal, 1))
+    result = checkout.process_checkout(cart, regular_customer)
+    if subtotal >= 50.0:
+        assert result["shipping"] == 0.0
+    else:
+        assert result["shipping"] == 10.0
+
+# --- Tax ---
+def test_tax_calculation(checkout, regular_customer, cart):
+    cart.add_item(CartItem("p1", "Widget", 100.0, 1))
+    result = checkout.process_checkout(cart, regular_customer)
+    expected_tax = 100.0 * 0.13
+    assert pytest.approx(result["tax"], rel=1e-2) == expected_tax
+
+# --- Payment failure ---
+def test_payment_failure_raises_error(checkout, regular_customer, cart, payment):
+    cart.add_item(CartItem("p1", "Widget", 10000.0, 2))  # total > 10000 triggers failure
+    payment.charge.return_value = {"success": False, "reason": "Amount exceeds limit"}
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, regular_customer)
+
+# --- Total never negative ---
+def test_total_never_negative(checkout, regular_customer, cart, payment):
+    cart.add_item(CartItem("p1", "Widget", 1.0, 1))
+    payment.charge.return_value = {"success": True}
+    result = checkout.process_checkout(cart, regular_customer)
+    assert result["total"] > 0.0
 
 **Why this is sub-optimal:**
-
-
+It catches bugs 1-9 which are explicitly stated in the prompt and does not detect any additional bugs; at best, it simply writes code to confirm that the known bugs exist. If only 5 test cases are provided to the LLM, it will only detect those 5 bugs or edge cases. 
 
 ---
 
 ### 3. New and Updated Guidelines that worked for Problem B_1
 
-#### Guideline X (Revised): []
+#### Guideline 8: Avoid providing code-specifics and narrowing of domain until necessary
 
 **Description:**
+To avoid having to enumerate all necessary tests or have the tests be made to match a flawed implementation, first gather common test cases in the domain, gather the expected behaviour of the program, compare the program to what is expected, and then tune tests to work with the existing code implementation. 
 
 **Reasoning:**
+When code to create test cases for is provided then the LLM has a tendency to create test cases that match the implementation including any errors in the code as correct outputs and focusing on parts that the developer has already spent more time on due to higher documentation. This can be addressed by explicitly stating which test cases to create, but such an expectation is undesirable, as the LLM is doing minimal work at that point. Thus, it is necessary to have the LLM identify edge cases and common flaws in similar projects within the domain, and only at the final step should the LLM receive the code to tailor the test cases accordingly.
+
+
 
 **Prompt and Context:**
 
-Context Given:
+Context Given: Files in /B_1 given with prompt 2
+Prompt 1:
+> Analyze the problem space of checkout services and identify the expected base behaviour and edge cases which might be problematic. List these in the form of inputs and expected outputs as well as common value, error, logic, or other problems for programs written in python.
 
->
+Prompt 2:
+> Analyze this code to confirm whether the implementation and logic follows expected behaviour
+
+Prompt 3:
+> Fine-tune and expand on the test cases to fit the code, then write them as a pytest script to the file `checkout_tests.py`
 
 **Solution or Output generated by GitHub Copilot (GPT-5-mini):**
 
+Response to Query 1:
+Here’s an analysis of the problem space for checkout services, focusing on Python implementations:
+
+## Expected Base Behaviour
+
+### Inputs
+- Cart items: List of items (name, price, quantity)
+- Discounts: Coupons, bulk discounts, etc.
+- Payment info: Card, cash, etc.
+- User info: Address, contact, etc.
+
+### Expected Outputs
+- Total price (with/without discounts)
+- Confirmation of payment
+- Receipt generation
+- Error messages for invalid input
+
+## Common Edge Cases & Problems
+
+### Value Problems
+- Negative prices or quantities
+- Zero price or quantity
+- Extremely large values (overflow)
+- Floating point precision errors
+
+### Error Problems
+- Invalid item names or IDs
+- Missing required fields (e.g., payment info)
+- Unsupported payment methods
+- Discount codes not applicable
+
+### Logic Problems
+- Incorrect discount application (e.g., stacking when not allowed)
+- Tax calculation errors
+- Rounding issues
+- Incorrect total calculation (e.g., not multiplying price by quantity)
+
+### Other Problems
+- Handling empty cart
+- Duplicate items in cart
+- Out-of-stock items
+- Race conditions (concurrent checkouts)
+- Security (e.g., injection attacks)
+
+## Example Inputs & Expected Outputs
+
+| Input                                      | Expected Output                  | Possible Problem                |
+|---------------------------------------------|----------------------------------|---------------------------------|
+| [{name: "apple", price: 1.0, qty: 2}]      | Total: 2.0                       | None                            |
+| [{name: "apple", price: -1.0, qty: 2}]     | Error: Invalid price             | Value error                     |
+| [{name: "apple", price: 1.0, qty: 0}]      | Error: Invalid quantity          | Value error                     |
+| []                                         | Error: Cart is empty             | Logic error                     |
+| [{name: "apple", price: 1.0, qty: 2}], "DISCOUNT10" | Total: 1.8 (10% off)      | Discount logic error            |
+| [{name: "apple", price: 1.0, qty: 2}], payment: None | Error: Payment required   | Missing input                   |
+| [{name: "apple", price: 1e10, qty: 1}]     | Total: 10000000000.0             | Overflow/precision error        |
+
+## Value Flaws
+- Negative price, quantity, or total
+- Zero price or quantity (should item be allowed?)
+- Price or quantity as non-numeric types (e.g., string)
+- Floating point rounding errors (e.g., 0.1 + 0.2 != 0.3)
+- Overflow/underflow with very large/small values
+- Currency mismatch (e.g., USD vs EUR)
+- Incorrect tax rates applied
+
+## Error Flaws
+- Missing required fields (item name, price, quantity, payment info)
+- Invalid item IDs or names (not in inventory)
+- Invalid payment method (unsupported, expired, etc.)
+- Invalid discount code (expired, not applicable)
+- Out-of-stock items not handled
+- Duplicate items not merged or handled
+- Cart is empty but checkout proceeds
+- Payment fails but order is processed
+- Address validation fails (missing, malformed)
+- User authentication/authorization errors
+
+## Logic Flaws
+- Incorrect total calculation (e.g., not multiplying price by quantity)
+- Discounts applied incorrectly (stacking, wrong order, wrong items)
+- Tax calculated before/after discounts incorrectly
+- Shipping fees omitted or miscalculated
+- Items not removed from inventory after purchase
+- Race conditions (multiple checkouts for same item)
+- Incorrect handling of returns/refunds
+- Incorrect receipt generation (missing items, wrong totals)
+- Failure to update user purchase history
+- Failure to handle partial payments or split payments
+
+## Security Flaws
+- Injection attacks (SQL, code, etc.)
+- Sensitive data not encrypted (payment info, addresses)
+- Insecure API endpoints (no authentication)
+- Price manipulation (client-side changes accepted)
+- Replay attacks (reusing payment tokens)
+- Lack of logging/auditing for transactions
+
+## Usability Flaws
+- Poor error messages (unclear, missing details)
+- No confirmation for successful/failed checkout
+- No support for multiple currencies or languages
+- No support for accessibility (screen readers, etc.)
+- Slow performance with large carts
+
+## Edge Case Flaws
+- Cart with maximum allowed items
+- Cart with minimum allowed items
+- Items with special pricing (e.g., buy one get one free)
+- Items with restricted purchase (age, region)
+- Time-limited offers not enforced
+- Items with variable pricing (weight, customizations)
+- Payment interrupted (network failure, timeout)
+- Session expiration during checkout
+
+## Data Integrity Flaws
+- Data not persisted (lost after checkout)
+- Duplicate orders created
+- Inventory not updated correctly
+- Transaction not atomic (partial updates)
+
+## Integration Flaws
+- Third-party payment gateway failures
+- Inventory sync failures
+- Discount provider API failures
+- Shipping provider API failures
+
+Let me know if you want a more detailed breakdown or specific test cases for your checkout service.
+
+
+Response to Query 2:
+
+Here’s an analysis of the `checkout_service.py` implementation, focusing on whether it follows expected behaviour and highlighting flaws:
+
+## Expected Behaviour vs. Implementation
+
+### Cart Validation
+- **Expected:** Should reject empty carts and out-of-stock items.
+- **Actual:** Does not validate empty cart (bug noted in code). Stock validation logic is inverted: it raises an error if stock is available, not if it’s unavailable.
+
+### Inventory Handling
+- **Expected:** Should check and decrement stock correctly.
+- **Actual:** InventoryService has cache invalidation bugs and double-decrement bugs for even quantities. PromotionService mutates cart items in place and decrements stock for BOGO, which can cause unintended inventory changes.
+
+### Discount Logic
+- **Expected:** Should prevent stacking of VIP and coupon discounts, apply correct minimum spend, and cap discounts.
+- **Actual:** Coupon stacking is not properly checked; excessive discounts are possible. VIP + FLASH5 is not blocked. SUMMER20 discount uses `max` instead of `min` for cap, so it always applies the cap, not the intended limit.
+
+### Loyalty Points
+- **Expected:** Should only deduct points if payment succeeds.
+- **Actual:** Loyalty points are deducted even if payment fails.
+
+### Shipping
+- **Expected:** Free shipping for orders above threshold.
+- **Actual:** Correctly implemented.
+
+### Tax and Total Calculation
+- **Expected:** Total should not be negative.
+- **Actual:** Total can be negative; not floored at zero.
+
+### Payment Processing
+- **Expected:** Should only confirm order and decrement inventory if payment succeeds.
+- **Actual:** PaymentGateway returns success for negative amounts. Payment failure is not handled; inventory and loyalty points are updated even if payment fails.
+
+### Notification
+- **Expected:** Notification sent after payment confirmation.
+- **Actual:** Notification sent before payment is confirmed.
+
+### Promotions
+- **Expected:** BOGO and bundle discounts should not interact in unintended ways.
+- **Actual:** BOGO interacts with bundle discount, causing unintended price reductions.
+
+## Summary Table
+
+| Feature                | Expected Behaviour                | Actual Implementation                  | Flaw/Deviation                |
+|------------------------|-----------------------------------|----------------------------------------|-------------------------------|
+| Cart validation        | Reject empty/out-of-stock cart    | No empty cart check; inverted stock    | Logic bug                     |
+| Inventory              | Correct decrement/check           | Double decrement, cache bug            | Value/logic bug               |
+| Discounts              | No stacking, correct min/cap      | Stacking not blocked, cap logic wrong  | Logic bug                     |
+| Loyalty points         | Deduct only if payment succeeds   | Deducted before payment                | Logic bug                     |
+| Shipping               | Free above threshold              | Correct                                | -                             |
+| Total calculation      | Never negative                    | Can be negative                        | Value bug                     |
+| Payment                | Only confirm if payment succeeds  | Payment failure not handled            | Logic bug                     |
+| Notification           | After payment                     | Before payment                         | Logic bug                     |
+| Promotions             | No unintended interactions        | BOGO + bundle interact                 | Logic bug                     |
+
+## Conclusion
+
+The implementation contains multiple logic, value, and integration flaws that deviate from expected behaviour for a checkout service. These should be addressed to ensure correctness, reliability, and user trust. Let me know if you want detailed recommendations or fixes for specific issues.
+
+
+Response to Query 3:
+
+# Comprehensive pytest tests for CheckoutService
+import pytest
+from checkout_service import (
+    Cart, CartItem, Customer, CustomerTier, InventoryService, PaymentGateway, CheckoutService, CheckoutError
+)
+
+def setup_services():
+    inventory = InventoryService()
+    payment = PaymentGateway()
+    checkout = CheckoutService(inventory, payment)
+    return inventory, payment, checkout
+
+def test_empty_cart_raises():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    customer = Customer("c1", "Alice")
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, customer)
+
+def test_out_of_stock_item_raises():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 10.0, 2)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 1)
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, customer)
+
+def test_negative_price():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", -5.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["total"] < 0  # Bug: negative total allowed
+
+def test_vip_discount_applied():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 100.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice", tier=CustomerTier.VIP)
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["discount"] == pytest.approx(100.0 * 0.15)
+
+def test_coupon_save10_applied():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 120.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer, coupon_code="SAVE10")
+    assert result["discount"] == pytest.approx(120.0 * 0.10)
+    assert result["coupon_applied"] == "SAVE10"
+
+def test_coupon_min_spend():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 50.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    with pytest.raises(CheckoutError):
+        checkout.process_checkout(cart, customer, coupon_code="SAVE10")
+
+def test_loyalty_points_redemption():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 200.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice", loyalty_points=600)
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer, redeem_points=True)
+    assert result["points_redeemed"] == 100
+    assert customer.loyalty_points == 500  # Bug: points deducted before payment
+
+def test_flash_sale_discount():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 100.0, 1, flash_sale=True)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["subtotal"] < 100.0
+
+def test_bundle_discount():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 20.0, 4)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["subtotal"] < 80.0
+
+def test_shipping_free_threshold():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 60.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["shipping"] == 0.0
+
+def test_shipping_cost_applied():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 20.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["shipping"] == 10.0
+
+def test_payment_failure():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 20000.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["total"] > 10000.0
+    # PaymentGateway returns failure, but checkout returns success (bug)
+
+def test_negative_total_payment():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", -100.0, 1)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    assert result["total"] < 0
+    # PaymentGateway returns success for negative amount (bug)
+
+def test_bogo_and_bundle_interaction():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "BOGO Widget", 10.0, 2)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer)
+    # BOGO mutates quantity, bundle discount may apply incorrectly
+    assert item.quantity > 2
+
+def test_vip_and_flash5_coupon():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 100.0, 1, flash_sale=True)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice", tier=CustomerTier.VIP)
+    inventory.set_stock("p1", 10)
+    result = checkout.process_checkout(cart, customer, coupon_code="FLASH5")
+    # VIP + FLASH5 not blocked (bug)
+    assert result["discount"] > 0
+
+def test_inventory_double_decrement_even_quantity():
+    inventory, payment, checkout = setup_services()
+    cart = Cart()
+    item = CartItem("p1", "Widget", 10.0, 2)
+    cart.add_item(item)
+    customer = Customer("c1", "Alice")
+    inventory.set_stock("p1", 10)
+    checkout.process_checkout(cart, customer)
+    # Stock should be decremented by 2, but bug causes double decrement
+    assert inventory.stock["p1"] == 6
+
 **Result:**
-
-
-
+11/19 bugs or edge cases tested. However, the developer does not need to provide any existing known bugs, thus this process can be iterated to discover unknown bugs in addition to the known ones.
 ---
 
 ### Problem C_1:  [Savira Umar]
