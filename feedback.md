@@ -513,9 +513,9 @@ using GitHub Copilot (GPT-4.1).
 ### 2. Guidelines That Didn't Work for Problem C_1
 
 ---
-####Guideline 5: Avoid Negative Cycles
-####Guideline 6: Specify Important Points at the End** 
-####Guideline 7: Trace from Entry Point**
+- Guideline 5: Avoid Negative Cycles
+- Guideline 6: Specify Important Points at the End** 
+- Guideline 7: Trace from Entry Point
 ---
 
 #### Prompt and Context
