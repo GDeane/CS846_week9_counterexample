@@ -514,7 +514,7 @@ using GitHub Copilot (GPT-4.1).
 
 ---
 - Guideline 5: Avoid Negative Cycles
-- Guideline 6: Specify Important Points at the End** 
+- Guideline 6: Specify Important Points at the End
 - Guideline 7: Trace from Entry Point
 ---
 
